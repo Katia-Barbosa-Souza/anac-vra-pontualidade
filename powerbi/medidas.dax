@@ -1,0 +1,108 @@
+-- Medidas DAX do relatório "Visão Operacional" (Power BI Desktop)
+-- Separador de argumentos: ";" (configuração regional pt-BR)
+
+-- === Universo de voos e funil ===
+Voos Registrados = COUNTROWS ( fato_voos )
+
+Voos Sem Horário Previsto =
+CALCULATE ( [Voos Registrados]; fato_voos[categoria_voo] = "3. Sem horário previsto (extra/retorno)" )
+
+Voos Programados =
+CALCULATE ( [Voos Registrados]; fato_voos[categoria_voo] <> "3. Sem horário previsto (extra/retorno)" )
+
+Voos em Quarentena =
+CALCULATE ( [Voos Registrados]; fato_voos[categoria_voo] = "4. Quarentena (fora de faixa)" )
+
+Voos Avaliaveis = SUM ( fato_voos[tem_metrica] )
+
+Voos Cancelados =
+CALCULATE ( COUNTROWS ( fato_voos ); fato_voos[voo_cancelado] = TRUE () )
+
+-- === Pontualidade, atrasos e cancelamento ===
+OTP Partida % = DIVIDE ( SUM ( fato_voos[partida_pontual] ); [Voos Avaliaveis] )
+
+OTP Chegada % = DIVIDE ( SUM ( fato_voos[chegada_pontual] ); [Voos Avaliaveis] )
+
+Atrasos > 60 min % = DIVIDE ( SUM ( fato_voos[atraso_gt60] ); [Voos Avaliaveis] )
+
+Cancelamento % = DIVIDE ( [Voos Cancelados]; [Voos Programados] )
+
+Atraso Médio Chegada (min) = AVERAGE ( fato_voos[atraso_chegada_min] )
+
+Atraso Mediano Chegada (min) = MEDIAN ( fato_voos[atraso_chegada_min] )
+
+Atraso Médio Partida (min) = AVERAGE ( fato_voos[atraso_partida_min] )
+
+Minutos Recuperados Médio = AVERAGE ( fato_voos[minutos_recuperados] )
+
+Atraso Médio Chegada (só atrasados) =
+CALCULATE (
+    AVERAGE ( fato_voos[atraso_chegada_min] );
+    fato_voos[voo_realizado] = TRUE ();
+    fato_voos[atraso_chegada_min] > 0
+)
+
+Atraso P90 Chegada (só atrasados) =
+CALCULATE (
+    PERCENTILE.INC ( fato_voos[atraso_chegada_min]; 0,9 );
+    fato_voos[voo_realizado] = TRUE ();
+    fato_voos[atraso_chegada_min] > 0
+)
+
+-- === Apoio visual e narrativa ===
+-- Referência para a cor das barras: ignora o eixo de cada gráfico
+-- e respeita os filtros selecionados
+OTP Partida Referência =
+CALCULATE (
+    [OTP Partida %];
+    REMOVEFILTERS ( fato_voos[nome_companhia] );
+    REMOVEFILTERS ( fato_voos[Companhia] );
+    REMOVEFILTERS ( fato_voos[hora_partida_prevista] );
+    REMOVEFILTERS ( dim_aeroporto_origem[Aeroporto] );
+    REMOVEFILTERS ( dim_calendario[DiaSemana] );
+    REMOVEFILTERS ( dim_calendario[DiaSemanaNum] )
+)
+
+Cor OTP = IF ( [OTP Partida %] < [OTP Partida Referência]; "#E8710A"; "#00AEEF" )
+
+-- Devolve valor apenas no pior mês (usada como marcador no gráfico de linha)
+OTP Partida Pior Mês =
+VAR Atual = [OTP Partida %]
+VAR Minimo =
+    CALCULATE (
+        MINX ( VALUES ( dim_calendario[MesAnoOrdem] ); [OTP Partida %] );
+        ALLSELECTED ( dim_calendario )
+    )
+RETURN
+    IF ( Atual = Minimo; Atual; BLANK () )
+
+-- Subtítulo dinâmico do gráfico mensal
+Insight Pior Mês =
+VAR T =
+    FILTER (
+        ADDCOLUMNS ( VALUES ( dim_calendario[MesAno] ); "_otp"; [OTP Partida %] );
+        NOT ISBLANK ( [_otp] )
+    )
+VAR P = TOPN ( 1; T; [_otp]; ASC )
+VAR Mes = MAXX ( P; dim_calendario[MesAno] )
+VAR V = MAXX ( P; [_otp] )
+VAR Gap = ( V - [OTP Partida %] ) * 100
+RETURN
+    IF (
+        ISBLANK ( V );
+        "Sem dados para os filtros selecionados";
+        IF (
+            COUNTROWS ( T ) = 1;
+            "Mês selecionado: " & Mes & " · " & FORMAT ( V; "0.0%" );
+            "Pior mês: " & Mes & " · " & FORMAT ( V; "0.0%" ) & " (" & FORMAT ( Gap; "0.0" ) & " p.p.)"
+        )
+    )
+
+-- Rodapé do relatório
+Nota Rodapé =
+"Base: " & FORMAT ( [Voos Registrados]; "#,0" ) & " registros ANAC (VRA). Fora do OTP: "
+& FORMAT ( [Voos Cancelados]; "#,0" ) & " cancelados, "
+& FORMAT ( [Voos Sem Horário Previsto]; "#,0" ) & " extras/retorno sem horário previsto e "
+& FORMAT ( [Voos em Quarentena]; "#,0" ) & " em quarentena (atraso fora de faixa)."
+
+-- O subtítulo do gráfico de aeroportos ("Pior aeroporto") segue a mesma lógica do Insight Pior Mês, aplicada aos oito aeroportos exibidos.
